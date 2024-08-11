@@ -9,21 +9,38 @@ import os
 from scipy.stats.qmc import Sobol, discrepancy
 from scipy.stats import norm, truncnorm
 
-REPO_ID = "mayflowergmbh/Wiedervereinigung-7b-dpo-laser"
+#REPO_ID = "mayflowergmbh/Wiedervereinigung-7b-dpo-laser"
+REPO_ID = "VAGOsolutions/SauerkrautLM-1.5b"
+
 
 config = AutoConfig.from_pretrained(REPO_ID)
 tokenizer = AutoTokenizer.from_pretrained(REPO_ID)
 
-config.num_hidden_layers = 2
-config.hidden_size = 256
-config.intermediate_size = 896
-config.num_attention_heads = 8
+#config.num_hidden_layers = 2
+#config.hidden_size = 256
+#config.intermediate_size = 896
+#config.num_attention_heads = 8
 
-model = AutoModelForCausalLM.from_config(config)
+#model = AutoModelForCausalLM.from_config(config)
+model = AutoModelForCausalLM.from_pretrained(REPO_ID, config=config, local_files_only=True)
 
 #rng = np.random.default_rng(0)
+"""
+with torch.no_grad():
+    for name, mdl in model.named_modules():
+        mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
+        emb_or_head = "embed_tokens" in name or "lm_head" in name
 
+        if mlp_or_attn or emb_or_head:
 
+            u, s, v = torch.linalg.svd(mdl.weight.data)
+            k = torch.linalg.matrix_rank(mdl.weight.data)
+
+            s = s[:k]
+            
+            s = torch.diag(s[:k])
+            mdl.weight.data = (u[:, :k] @ s) @ v[:k, :]"""
+            
 def get_noise_sobol(shape, seed):
     
     sobol = Sobol(d=1, seed=seed)
@@ -43,14 +60,15 @@ def get_noise_normal(shape, seed):
     
 def get_noise_uniform(shape, seed):
     rng = np.random.default_rng(seed)
-    return rng.uniform(-1, 1, size=shape)
+    ret = rng.uniform(-1, 1, size=shape)
+    return ret
 
 def get_noise_truncnorm(shape, seed):
     return truncnorm.rvs(-0.5, 0.5, 0, 1, size=shape, random_state=seed)
 
 
+get_noise = get_noise_normal
 
-PERTURBE_SCALE = 0.
 
 momentum_dict = {}
 
@@ -61,17 +79,16 @@ def perturbe(model, scale, sign, seed):
     with torch.no_grad():
 
         for name, mdl in model.named_modules():
-            if "self_attn" in name or "mlp" in name:
-                if "_proj" in name:
-                    
-                    seed_i = seed_gen.integers(1000, 100000)
-                    #noise = get_noise_sobol(mdl.weight.shape, seed_i)
-                    noise = get_noise_normal(mdl.weight.shape, seed_i)
-                    #noise = get_noise_uniform(mdl.weight.shape, seed_i)
-                    #noise = get_noise_truncnorm(mdl.weight.shape, seed_i)
+            mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
+            emb_or_head = "embed_tokens" in name or "lm_head" in name
 
-                    #print(np.linalg.norm(mdl.weight), mdl.weight.mean(), mdl.weight.std())
-                    mdl.weight += torch.Tensor(noise) * scale * sign 
+            if mlp_or_attn or emb_or_head:
+                
+                seed_i = seed_gen.integers(1000, 100000)
+                noise = get_noise(mdl.weight.shape, seed_i)
+
+                #print(np.linalg.norm(mdl.weight), mdl.weight.mean(), mdl.weight.std())
+                mdl.weight += torch.Tensor(noise) * scale * sign 
 
 
 def update(model, grad, lr, seed):
@@ -81,15 +98,13 @@ def update(model, grad, lr, seed):
     with torch.no_grad():
 
         for name, mdl in model.named_modules():
-            if "self_attn" in name or "mlp" in name:
-                if "_proj" in name:
-                    
-                    seed_i = seed_gen.integers(1000, 100000)
-                    #noise = get_noise_uniform(mdl.weight.shape, seed_i)
-                    #noise = get_noise_sobol(mdl.weight.shape, seed_i)
-                    noise = get_noise_normal(mdl.weight.shape, seed_i)
-                    #noise = get_noise_truncnorm(mdl.weight.shape, seed_i)
+            mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
+            emb_or_head = "embed_tokens" in name or "lm_head" in name
 
+            if mlp_or_attn or emb_or_head:
+                    seed_i = seed_gen.integers(1000, 100000)
+                    noise = get_noise(mdl.weight.shape, seed_i)
+                    
                     noise = torch.Tensor(noise)
                     update = (grad * noise)
                     #if (norm := np.linalg.norm(update)) > 1:
@@ -101,7 +116,7 @@ def update(model, grad, lr, seed):
 
                     momentum_dict[name] = momentum_dict[name] * 0.9 + update    
 
-                    #mdl.weight -= lr * (update + mdl.weight * 0.01)
+                    #mdl.weight -= lr * (update)# + mdl.weight * 0.01)
                     mdl.weight -= lr * (momentum_dict[name])# + mdl.weight * 0.1)
 
 def add_positive_noise(model, scale, seed):
@@ -114,9 +129,9 @@ def reset_noise(model, scale, seed):
     perturbe(model, scale, 1, seed)
 
 
-SEED = 0
-SCALE = 1e-3
-LR = 1e-3
+SEED = 1000
+SCALE = 1e-1
+LR = 1e-1
 
 dataset = load_dataset("wikimedia/wikipedia", "20231101.de", streaming=True)["train"]
 #shuffled_dataset = ds.shuffle(seed=42, buffer_size=1000)    
@@ -156,13 +171,13 @@ with torch.no_grad():
         batch = next(bg)
         
         inputs = batch[..., :-1]
-        target = torch.nn.functional.one_hot(batch[..., 1:], 32000).type(torch.float32)
+        target = torch.nn.functional.one_hot(batch[..., 1:], config.vocab_size).type(torch.float32)
 
 
 
         #y0 = model.forward(**batch)#, attention_mask=batch["attention_mask"])
 
-        add_positive_noise(model, SCALE, SEED)
+        add_positive_noise(model, SCALE, SEED)        
         yp = model.forward(inputs)
         #print(((y0["logits"]-yp["logits"])**2).mean())
         #print(yp["logits"].shape, target.shape)
