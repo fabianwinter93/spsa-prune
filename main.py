@@ -16,15 +16,14 @@ REPO_ID = "VAGOsolutions/SauerkrautLM-1.5b"
 config = AutoConfig.from_pretrained(REPO_ID)
 tokenizer = AutoTokenizer.from_pretrained(REPO_ID)
 
-#config.num_hidden_layers = 2
+#config.num_hidden_layers = 1
 #config.hidden_size = 256
 #config.intermediate_size = 896
 #config.num_attention_heads = 8
 
 #model = AutoModelForCausalLM.from_config(config)
-model = AutoModelForCausalLM.from_pretrained(REPO_ID, config=config, local_files_only=True)
+model = AutoModelForCausalLM.from_pretrained(REPO_ID, device_map="auto", config=config, local_files_only=True)
 
-#rng = np.random.default_rng(0)
 """
 with torch.no_grad():
     for name, mdl in model.named_modules():
@@ -70,7 +69,12 @@ def get_noise_truncnorm(shape, seed):
 get_noise = get_noise_normal
 
 
-momentum_dict = {}
+#momentum_dict = {}
+
+optim_states = {}
+optim_states["momentum"] = {}
+optim_states["grad_t-1"] = {}
+optim_states["learning_rates"] = {}
 
 def perturbe(model, scale, sign, seed):
 
@@ -79,16 +83,18 @@ def perturbe(model, scale, sign, seed):
     with torch.no_grad():
 
         for name, mdl in model.named_modules():
-            mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
+            #mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
             emb_or_head = "embed_tokens" in name or "lm_head" in name
+            
 
-            if mlp_or_attn or emb_or_head:
-                
+            if hasattr(mdl, "weight") and not emb_or_head:                
                 seed_i = seed_gen.integers(1000, 100000)
                 noise = get_noise(mdl.weight.shape, seed_i)
 
+                noise = torch.Tensor(noise).to(mdl.weight.device) * scale * sign
                 #print(np.linalg.norm(mdl.weight), mdl.weight.mean(), mdl.weight.std())
-                mdl.weight += torch.Tensor(noise) * scale * sign 
+
+                mdl.weight += noise 
 
 
 def update(model, grad, lr, seed):
@@ -98,26 +104,47 @@ def update(model, grad, lr, seed):
     with torch.no_grad():
 
         for name, mdl in model.named_modules():
-            mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
+            #mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
             emb_or_head = "embed_tokens" in name or "lm_head" in name
 
-            if mlp_or_attn or emb_or_head:
+            
+            if hasattr(mdl, "weight") and not emb_or_head:
                     seed_i = seed_gen.integers(1000, 100000)
                     noise = get_noise(mdl.weight.shape, seed_i)
                     
-                    noise = torch.Tensor(noise)
+                    noise = torch.Tensor(noise).to(mdl.weight.device)
                     update = (grad * noise)
                     #if (norm := np.linalg.norm(update)) > 1:
                     #    update /= norm
                     #print(np.linalg.norm(update))
+                
 
-                    if name not in momentum_dict:
-                        momentum_dict[name] = torch.zeros_like(update)
+                    grad_tm1_dict = optim_states["grad_t-1"]
+                    learning_rates = optim_states["learning_rates"]
 
-                    momentum_dict[name] = momentum_dict[name] * 0.9 + update    
+                    if name not in grad_tm1_dict:
+                        grad_tm1_dict[name] = torch.zeros_like(update).to(mdl.weight.device)
+                    
+                    if name not in learning_rates:
+                        learning_rates[name] = lr * torch.ones(()).to(mdl.weight.device)
+                    print(name, learning_rates[name])
 
-                    #mdl.weight -= lr * (update)# + mdl.weight * 0.01)
-                    mdl.weight -= lr * (momentum_dict[name])# + mdl.weight * 0.1)
+                    gu = update * (-grad_tm1_dict[name])
+                    gu = gu.sum()
+                    #learning_rates[name] = learning_rates[name] - lr * gu
+                    learning_rates[name] = learning_rates[name] * (1 - lr * (gu / (1e-5+torch.linalg.norm(grad_tm1_dict[name])*torch.linalg.norm(update))))
+                    
+                    grad_tm1_dict[name] = update
+
+                    #momentum_dict = optim_states["momentum"]
+                    
+                    #if name not in momentum_dict:
+                    #    momentum_dict[name] = torch.zeros_like(update).to(mdl.weight.device)
+
+                    #momentum_dict[name] = momentum_dict[name] * 0.9 + update    
+
+                    mdl.weight -= learning_rates[name] * (update)# + mdl.weight * 0.01)
+                    #mdl.weight -= lr * (momentum_dict[name])# + mdl.weight * 0.1)
 
 def add_positive_noise(model, scale, seed):
     perturbe(model, scale, 1, seed)
@@ -130,7 +157,7 @@ def reset_noise(model, scale, seed):
 
 
 SEED = 1000
-SCALE = 1e-1
+SCALE = 1e-0
 LR = 1e-1
 
 dataset = load_dataset("wikimedia/wikipedia", "20231101.de", streaming=True)["train"]
@@ -165,30 +192,32 @@ with torch.no_grad():
 
     while True:
 
+        #SCALE = np.random.uniform(0, 1)
+
         SEED = SEED + 1
         #texts = [next(iter(dataset))["text"] for _ in range(8)]
         #batch = tokenizer.batch_encode_plus(texts, return_tensors="pt")
         batch = next(bg)
         
-        inputs = batch[..., :-1]
-        target = torch.nn.functional.one_hot(batch[..., 1:], config.vocab_size).type(torch.float32)
+        inputs = batch[..., :-1].to(model.model.embed_tokens.weight.device)
+        target = torch.nn.functional.one_hot(batch[..., 1:], config.vocab_size).type(torch.float32).to("cpu")
 
 
 
         #y0 = model.forward(**batch)#, attention_mask=batch["attention_mask"])
 
         add_positive_noise(model, SCALE, SEED)        
-        yp = model.forward(inputs)
+        yp = model.forward(inputs)["logits"].to("cpu")
         #print(((y0["logits"]-yp["logits"])**2).mean())
         #print(yp["logits"].shape, target.shape)
 
-        print(batch.shape, yp["logits"].shape, target.shape)
-        lp = torch.nn.functional.cross_entropy(yp["logits"], target)
+        print(batch.shape, yp.shape, target.shape)
+        lp = torch.nn.functional.cross_entropy(yp, target)
 
         remove_positive_and_add_negative_noise(model, SCALE, SEED)
-        yn = model.forward(inputs)
+        yn = model.forward(inputs)["logits"].to("cpu")
         #print(((y0["logits"]-yn["logits"])**2).mean())
-        ln = torch.nn.functional.cross_entropy(yn["logits"], target)
+        ln = torch.nn.functional.cross_entropy(yn, target)
         
         print(lp, ln)
         projected_grad = ((lp - ln) / (2 * SCALE)).item()
