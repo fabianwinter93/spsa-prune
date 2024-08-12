@@ -9,7 +9,7 @@ and Uncertainty in Zeroth-Order Optimization](https://arxiv.org/pdf/1910.06513)
 
 [MINI-LLM: Memory-Efficient Structured Pruning for Large Language Models](https://arxiv.org/pdf/2407.11681)
 
-
+```bash
 git clone https://github.com/fabianwinter93/spsa-prune
 cd spsa-prune
 
@@ -18,4 +18,4 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
-
+```
