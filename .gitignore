@@ -1,0 +1,6 @@
+# ignore txt files
+*.txt
+# but not requirements.txt
+!requirements.txt
+
+.venv/
