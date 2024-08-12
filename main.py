@@ -11,6 +11,8 @@ from scipy.stats import norm, truncnorm
 
 #REPO_ID = "mayflowergmbh/Wiedervereinigung-7b-dpo-laser"
 REPO_ID = "VAGOsolutions/SauerkrautLM-1.5b"
+#REPO_ID = "VAGOsolutions/SauerkrautLM-gemma-2-2b-it"
+#REPO_ID = "HuggingFaceTB/SmolLM-135M"
 
 
 config = AutoConfig.from_pretrained(REPO_ID)
@@ -84,10 +86,16 @@ def perturbe(model, scale, sign, seed):
 
         for name, mdl in model.named_modules():
             #mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
-            emb_or_head = "embed_tokens" in name or "lm_head" in name
+            emb_or_head = "embed_tokens" in name# or "lm_head" in name
             
-
-            if hasattr(mdl, "weight") and not emb_or_head:                
+            
+                
+            if ((is_weight := hasattr(mdl, "weight")) or (is_bias := hasattr(mdl, "bias"))) and not emb_or_head:                
+                
+                if is_bias:
+                    if mdl.bias is None:
+                        mdl.bias = torch.nn.Parameter(torch.zeros((mdl.out_features)))
+            
                 seed_i = seed_gen.integers(1000, 100000)
                 noise = get_noise(mdl.weight.shape, seed_i)
 
@@ -105,21 +113,21 @@ def update(model, grad, lr, seed):
 
         for name, mdl in model.named_modules():
             #mlp_or_attn = ("self_attn" in name or "mlp" in name) and "_proj" in name
-            emb_or_head = "embed_tokens" in name or "lm_head" in name
+            emb_or_head = "embed_tokens" in name# or "lm_head" in name
 
             
-            if hasattr(mdl, "weight") and not emb_or_head:
+            if ((is_weight := hasattr(mdl, "weight")) or (is_bias := hasattr(mdl, "bias"))) and not emb_or_head:                
                     seed_i = seed_gen.integers(1000, 100000)
                     noise = get_noise(mdl.weight.shape, seed_i)
                     
                     noise = torch.Tensor(noise).to(mdl.weight.device)
                     update = (grad * noise)
-                    #if (norm := np.linalg.norm(update)) > 1:
-                    #    update /= norm
+                    if (norm := np.linalg.norm(update)) > 1:
+                        update /= norm
                     #print(np.linalg.norm(update))
                 
 
-                    grad_tm1_dict = optim_states["grad_t-1"]
+                    """grad_tm1_dict = optim_states["grad_t-1"]
                     learning_rates = optim_states["learning_rates"]
 
                     if name not in grad_tm1_dict:
@@ -134,17 +142,21 @@ def update(model, grad, lr, seed):
                     #learning_rates[name] = learning_rates[name] - lr * gu
                     learning_rates[name] = learning_rates[name] * (1 - lr * (gu / (1e-5+torch.linalg.norm(grad_tm1_dict[name])*torch.linalg.norm(update))))
                     
-                    grad_tm1_dict[name] = update
+                    grad_tm1_dict[name] = update"""
 
-                    #momentum_dict = optim_states["momentum"]
+                    momentum_dict = optim_states["momentum"]
                     
-                    #if name not in momentum_dict:
-                    #    momentum_dict[name] = torch.zeros_like(update).to(mdl.weight.device)
+                    if name not in momentum_dict:
+                        momentum_dict[name] = torch.zeros_like(update).to(mdl.weight.device)
 
-                    #momentum_dict[name] = momentum_dict[name] * 0.9 + update    
+                    momentum_dict[name] = momentum_dict[name] * 0.9 + update    
 
-                    mdl.weight -= learning_rates[name] * (update)# + mdl.weight * 0.01)
-                    #mdl.weight -= lr * (momentum_dict[name])# + mdl.weight * 0.1)
+                    #print(name, torch.linalg.norm(update), torch.linalg.norm(momentum_dict[name]), momentum_dict[name].mean(), momentum_dict[name].std())
+                    #print(update.mean(), update.std())
+                    #update = update / (1e-5 + update.std())
+                    #mdl.weight -= lr * (update)# + mdl.weight * 0.01)
+                    #mdl.weight -= learning_rates[name] * (update)# + mdl.weight * 0.01)
+                    mdl.weight -= lr * (momentum_dict[name])# + mdl.weight * 0.1)
 
 def add_positive_noise(model, scale, seed):
     perturbe(model, scale, 1, seed)
@@ -157,8 +169,8 @@ def reset_noise(model, scale, seed):
 
 
 SEED = 1000
-SCALE = 1e-0
-LR = 1e-1
+SCALE = 1e-2
+LR = 1e-2
 
 dataset = load_dataset("wikimedia/wikipedia", "20231101.de", streaming=True)["train"]
 #shuffled_dataset = ds.shuffle(seed=42, buffer_size=1000)    
