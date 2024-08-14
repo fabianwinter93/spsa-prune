@@ -1,3 +1,8 @@
+
+![Screenshot 2024-08-14 082656](https://github.com/user-attachments/assets/e310e35f-1a28-4afc-9070-a1eb79efe5b1)
+
+![Screenshot 2024-08-14 083749](https://github.com/user-attachments/assets/bf21b171-5493-455a-ae74-49975f22f2ef)
+
 # spsa-prune
 
 [Simultaneous perturbation stochastic approximation](https://en.wikipedia.org/wiki/Simultaneous_perturbation_stochastic_approximation)
